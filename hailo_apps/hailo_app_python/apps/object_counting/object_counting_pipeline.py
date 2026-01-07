@@ -100,7 +100,7 @@ class GStreamerObjectCountingApp(GStreamerApp):
     detections include a stable `HAILO_UNIQUE_ID` for per-object counting.
     """
 
-    def __init__(self, app_callback, user_data, parser=None):
+    def __init__(self, app_callback, user_data, parser=None, argv=None):
         if parser is None:
             parser = get_default_parser()
 
@@ -128,7 +128,7 @@ class GStreamerObjectCountingApp(GStreamerApp):
         )
 
         hailo_logger.info("Initializing GStreamer Object Counting App...")
-        super().__init__(parser, user_data)
+        super().__init__(parser, user_data, argv=argv)
 
         # Model resources (reuse detection pipeline resources)
         self.batch_size = 2

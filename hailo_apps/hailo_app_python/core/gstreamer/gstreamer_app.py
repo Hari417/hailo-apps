@@ -118,14 +118,14 @@ def dummy_callback(pad, info, user_data):
 # GStreamerApp class
 # -----------------------------------------------------------------------------------------------
 class GStreamerApp:
-    def __init__(self, args, user_data: app_callback_class):
+    def __init__(self, args, user_data: app_callback_class, argv=None):
         hailo_logger.debug("Initializing GStreamerApp")
         setproctitle.setproctitle("Hailo Python App")
 
         self._shutdown_requested = False
         self._shutdown_lock = threading.Lock()
 
-        self.options_menu = args.parse_args()
+        self.options_menu = args.parse_args(argv)
         hailo_logger.debug(f"Parsed CLI options: {self.options_menu}")
 
         signal.signal(signal.SIGINT, self.shutdown)
@@ -448,7 +448,7 @@ class GStreamerApp:
         Gst.debug_bin_to_dot_file(self.pipeline, Gst.DebugGraphDetails.ALL, "pipeline")
         return False
 
-    def run(self):
+    def run(self, *, exit_on_finish: bool = True) -> int:
         hailo_logger.debug("Running GStreamerApp main loop")
         bus = self.pipeline.get_bus()
         bus.add_signal_watch()
@@ -527,14 +527,17 @@ class GStreamerApp:
             except Exception as e:
                 hailo_logger.error("Failed printing final counters: %s", e)
 
+            exit_code = 1 if self.error_occurred else 0
             if self.error_occurred:
                 hailo_logger.error("Exiting with error")
                 print("Exiting with error...", file=sys.stderr)
-                sys.exit(1)
             else:
                 hailo_logger.debug("Exiting successfully")
                 print("Exiting...")
-                sys.exit(0)
+
+            if exit_on_finish:
+                sys.exit(exit_code)
+            return exit_code
 
 
 def picamera_thread(pipeline, video_width, video_height, video_format, picamera_config=None):

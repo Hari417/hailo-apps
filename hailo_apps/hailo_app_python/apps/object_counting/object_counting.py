@@ -1,6 +1,9 @@
 # region imports
 from __future__ import annotations
 
+import threading
+from typing import Sequence
+
 import gi
 
 gi.require_version("Gst", "1.0")
@@ -225,9 +228,55 @@ def app_callback(pad, info, user_data: ObjectCountingUserData):
 
 def main():
     hailo_logger.info("Starting Hailo Object Counting App...")
+    # CLI entrypoint: keep original behavior (GStreamerApp.run will sys.exit by default)
     user_data = ObjectCountingUserData()
     app = GStreamerObjectCountingApp(app_callback, user_data)
     app.run()
+
+
+def run_object_counting(*, duration_s: float | None = None, argv: Sequence[str] | None = None) -> tuple[int, int]:
+    """Run the object-counting pipeline and return the final (IN, OUT) totals.
+
+    Intended for programmatic use (e.g. from your own `main.py`) where you don't
+    want the library to call `sys.exit()`.
+
+    Args:
+        duration_s: If provided, automatically stops the app after this many seconds.
+            If None, runs until EOS (file input) or until interrupted.
+        argv: Optional argv list passed to the app's argparse parser (e.g.
+            ["--input", "usb", "--use-frame", "--region", "20,400;1080,400"]).
+
+    Returns:
+        (in_count, out_count)
+
+    Raises:
+        RuntimeError: if the pipeline exits with an error.
+    """
+
+    user_data = ObjectCountingUserData()
+    app = GStreamerObjectCountingApp(app_callback, user_data, argv=list(argv) if argv is not None else None)
+
+    stop_timer: threading.Timer | None = None
+    if duration_s is not None:
+        if duration_s <= 0:
+            raise ValueError("duration_s must be > 0")
+        stop_timer = threading.Timer(duration_s, app.shutdown)
+        stop_timer.daemon = True
+        stop_timer.start()
+
+    try:
+        exit_code = app.run(exit_on_finish=False)
+    finally:
+        if stop_timer is not None:
+            stop_timer.cancel()
+
+    in_count = int(getattr(user_data, "in_count", 0))
+    out_count = int(getattr(user_data, "out_count", 0))
+
+    if exit_code != 0:
+        raise RuntimeError(f"Object counting pipeline exited with code {exit_code} (IN={in_count}, OUT={out_count})")
+
+    return in_count, out_count
 
 
 if __name__ == "__main__":
