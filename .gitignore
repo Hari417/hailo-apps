@@ -8,7 +8,7 @@ hailo_apps_infra/__pycache__/
 resources/*.so
 resources/*.hef
 resources/*.mp4
-
+*.hef
 # Logs and temp files
 *.log
 *.tmp

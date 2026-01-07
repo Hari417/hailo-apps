@@ -122,6 +122,9 @@ class GStreamerApp:
         hailo_logger.debug("Initializing GStreamerApp")
         setproctitle.setproctitle("Hailo Python App")
 
+        self._shutdown_requested = False
+        self._shutdown_lock = threading.Lock()
+
         self.options_menu = args.parse_args()
         hailo_logger.debug(f"Parsed CLI options: {self.options_menu}")
 
@@ -364,17 +367,48 @@ class GStreamerApp:
         return False
 
     def shutdown(self, signum=None, frame=None):
+        with self._shutdown_lock:
+            if self._shutdown_requested:
+                hailo_logger.warning("Shutdown already in progress; forcing exit")
+                os._exit(130)
+            self._shutdown_requested = True
+
         hailo_logger.warning("Shutdown initiated")
         print("Shutting down... Hit Ctrl-C again to force quit.")
-        signal.signal(signal.SIGINT, signal.SIG_DFL)
-        self.pipeline.set_state(Gst.State.PAUSED)
-        GLib.usleep(100000)
 
-        self.pipeline.set_state(Gst.State.READY)
-        GLib.usleep(100000)
+        # If the user hits Ctrl-C again, force-exit immediately.
+        signal.signal(signal.SIGINT, lambda *_args: os._exit(130))
 
-        self.pipeline.set_state(Gst.State.NULL)
-        GLib.idle_add(self.loop.quit)
+        try:
+            self.user_data.running = False
+        except Exception:
+            pass
+
+        # IMPORTANT: don't call into GStreamer directly from the signal handler.
+        # Schedule teardown on the GLib main loop thread.
+        try:
+            if self.loop is not None:
+                GLib.idle_add(self._shutdown_idle)
+            else:
+                os._exit(130)
+        except Exception:
+            os._exit(130)
+
+    def _shutdown_idle(self):
+        """Run shutdown on the GLib main loop thread."""
+        try:
+            if self.pipeline is not None:
+                self.pipeline.set_state(Gst.State.NULL)
+        except Exception as e:
+            hailo_logger.error("Error while stopping pipeline: %s", e)
+
+        try:
+            if self.loop is not None:
+                self.loop.quit()
+        except Exception:
+            pass
+
+        return False
 
     def update_fps_caps(self, new_fps=30, source_name="source"):
         hailo_logger.debug(
@@ -466,16 +500,33 @@ class GStreamerApp:
         try:
             hailo_logger.debug("Cleaning up after loop exit")
             self.user_data.running = False
-            self.pipeline.set_state(Gst.State.NULL)
+            if self.pipeline is not None:
+                self.pipeline.set_state(Gst.State.NULL)
             if self.options_menu.use_frame:
-                display_process.terminate()
-                display_process.join()
+                try:
+                    if display_process.is_alive():
+                        display_process.terminate()
+                    display_process.join(timeout=2)
+                except Exception as e:
+                    hailo_logger.error("Error stopping display process: %s", e)
             for t in self.threads:
                 t.join()
         except Exception as e:
             hailo_logger.error(f"Error during cleanup: {e}")
             print(f"Error during cleanup: {e}", file=sys.stderr)
         finally:
+            # Optional final summary for apps that maintain IN/OUT counters.
+            try:
+                if hasattr(self.user_data, "in_count") and hasattr(self.user_data, "out_count"):
+                    in_count = int(getattr(self.user_data, "in_count"))
+                    out_count = int(getattr(self.user_data, "out_count"))
+                    net = in_count - out_count
+                    msg = f"Final counts | IN={in_count} OUT={out_count} NET={net}"
+                    hailo_logger.info(msg)
+                    print(msg)
+            except Exception as e:
+                hailo_logger.error("Failed printing final counters: %s", e)
+
             if self.error_occurred:
                 hailo_logger.error("Exiting with error")
                 print("Exiting with error...", file=sys.stderr)
